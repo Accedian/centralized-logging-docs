@@ -1,0 +1,129 @@
+@startuml Centralized Monitoring Architecture
+skinparam componentStyle rectangle
+skinparam linetype ortho
+
+title Centralized Monitoring - Distributed PCA Architecture
+
+' Colors
+!define REMOTE_COLOR #E8F5E9
+!define CENTRAL_COLOR #E3F2FD
+!define STORAGE_COLOR #FFF3E0
+
+' ========================================
+' REMOTE SITES (Mobility Collectors)
+' ========================================
+
+package "Remote Site 1 - Mobility Collector" REMOTE_COLOR {
+    rectangle "Log Collection" {
+        [FluentD Agent] as fd1
+        [Application Logs] as logs1
+    }
+    rectangle "Metrics Collection" {
+        [Prometheus] as prom1
+        [OTEL Collector] as otel1
+    }
+    logs1 --> fd1
+    prom1 --> otel1 : Prometheus metrics
+}
+
+package "Remote Site 2 - Mobility Collector" REMOTE_COLOR {
+    rectangle "Log Collection" {
+        [FluentD Agent] as fd2
+        [Application Logs] as logs2
+    }
+    rectangle "Metrics Collection" {
+        [Prometheus] as prom2
+        [OTEL Collector] as otel2
+    }
+    logs2 --> fd2
+    prom2 --> otel2
+}
+
+package "Remote Site N - Mobility Collector" REMOTE_COLOR {
+    rectangle "Log Collection" {
+        [FluentD Agent] as fdN
+        [Application Logs] as logsN
+    }
+    rectangle "Metrics Collection" {
+        [Prometheus] as promN
+        [OTEL Collector] as otelN
+    }
+    logsN --> fdN
+    promN --> otelN
+}
+
+' ========================================
+' CENTRAL PCA (AOD Deployer)
+' ========================================
+
+package "Central PCA - AOD Deployer" CENTRAL_COLOR {
+    
+    rectangle "Ingress Layer" {
+        [nginx Reverse Proxy] as nginx
+        note right of nginx
+          Ports:
+          - 443: Tenant API
+          - 2443: Admin API
+          - 3443: Zitadel Auth
+        end note
+    }
+    
+    rectangle "Log Aggregation" {
+        [FluentD Aggregator] as fd_agg
+        [Bellhop OTEL Collector] as bellhop
+    }
+    
+    rectangle "Storage Layer" STORAGE_COLOR {
+        database "OpenSearch\n(Elasticsearch)" as opensearch {
+        }
+        database "Prometheus\n+ Thanos" as thanos {
+        }
+        database "Kafka" as kafka_central
+        database "Druid" as druid
+    }
+    
+    rectangle "Visualization" {
+        [Grafana] as grafana
+        [OpenSearch Dashboards] as osd
+    }
+    
+    rectangle "Alerting" {
+        [Alert Service] as alert_svc
+        [Ignite] as ignite
+    }
+}
+
+' ========================================
+' DATA FLOWS
+' ========================================
+
+' Logs flow
+fd1 --> fd_agg : Forward logs\n(TCP/TLS)
+fd2 --> fd_agg : Forward logs\n(TCP/TLS)
+fdN --> fd_agg : Forward logs\n(TCP/TLS)
+fd_agg --> opensearch : Index logs
+
+' Metrics flow (OTEL)
+otel1 --> nginx : OTLP/HTTP\n(Bearer Auth)
+otel2 --> nginx : OTLP/HTTP\n(Bearer Auth)
+otelN --> nginx : OTLP/HTTP\n(Bearer Auth)
+nginx --> bellhop : Route /otel/*
+bellhop --> thanos : Store metrics
+bellhop --> kafka_central : Stream events
+
+' Alternative: Prometheus remote_write to Thanos
+prom1 ..> thanos : remote_write\n(Alternative)
+prom2 ..> thanos : remote_write\n(Alternative)
+promN ..> thanos : remote_write\n(Alternative)
+
+' Storage to visualization
+opensearch --> osd : Query logs
+thanos --> grafana : Query metrics
+opensearch --> grafana : Log panels
+druid --> grafana : Analytics data
+
+' Alerting
+thanos --> ignite : Metric alerts
+opensearch --> alert_svc : Log-based alerts
+
+@enduml
