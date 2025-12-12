@@ -2,7 +2,12 @@
 
 ## Overview
 
-The Central PCA (Provider Connectivity Assurance) solution, deployed via AOD Deployer, serves as the central aggregation point for telemetry from distributed Mobility Collector instances.
+The Central PCA (Provider Connectivity Assurance) solution, deployed via **AOD Deployer using Replicated KOTS**, serves as the central aggregation point for telemetry from distributed Mobility Collector instances.
+
+**Key Configuration Files:**
+- `helm/replicated/skylight-analytics-chart.yaml.in` - Replicated HelmChart values (equivalent to values.yaml)
+- `helm/skylight/configs/nginx.conf` - nginx reverse proxy configuration
+- `helm/replicated/config.yaml` - Replicated admin console configuration
 
 ## Central PCA Components (AOD Deployer)
 
@@ -12,15 +17,29 @@ The Central PCA (Provider Connectivity Assurance) solution, deployed via AOD Dep
 |-----------|------|--------|
 | nginx | 443 | Tenant API access |
 | nginx | 2443 | Admin API access |
-| nginx | 3443 | Zitadel authentication |
+| nginx | 3443 | Zitadel authentication (gRPC) |
+
+The nginx reverse proxy handles all incoming traffic and routes to appropriate backend services based on URL path. It includes:
+- TLS termination with configurable certificates (cert-manager or external)
+- Bearer token authentication via `/auth` subrequest to `skylight-aaa`
+- mTLS client certificate validation for machine-to-machine auth
 
 ### Existing Telemetry Receivers
 
-| Component | Protocol | Purpose |
-|-----------|----------|--------|
-| Bellhop (OTEL Collector) | OTLP/HTTP | Receives traces, metrics, logs via `/otel/` |
-| Kafka | TCP 9092 | Event streaming and message bus |
-| Prometheus Gateway | HTTP | Push gateway for batch metrics |
+| Component | Protocol | Purpose | Endpoint |
+|-----------|----------|---------|----------|
+| OpenTelemetry Collector | OTLP/HTTP | Receives traces, metrics, logs | `/otel/` → `opentelemetry-collector:4318` |
+| Bellhop | Internal | OTEL data processing | Transforms and routes telemetry |
+| otel-mapping-service | Kafka | OTEL data transformation | Consumes `otel-*-in` topics |
+| Kafka | TCP 9092 | Event streaming and message bus | `kafka:9092` |
+| Prometheus Pushgateway | HTTP | Push gateway for batch metrics | `prometheus-gateway:9091` |
+
+**OTEL Data Flow in Central PCA:**
+```
+nginx /otel/ → opentelemetry-collector:4318 → Kafka (otel-*-in topics)
+                                            → otel-mapping-service → Kafka (otel-mapped-*-in)
+                                            → Ignite/Druid/Elasticsearch
+```
 
 ### Storage Components
 
@@ -28,10 +47,19 @@ The Central PCA (Provider Connectivity Assurance) solution, deployed via AOD Dep
 |-----------|---------|----------|
 | Elasticsearch | Log storage and search | Logs, events |
 | Druid | Analytics OLAP database | Time-series analytics |
-| Kafka | Event streaming | Real-time events |
+| Kafka | Event streaming | Real-time events, OTEL data |
 | PostgreSQL | Relational data | Configuration, metadata |
-| HDFS | Distributed file storage | Large datasets |
-| MinIO | S3-compatible object storage | Backups, artifacts |
+| HDFS | Distributed file storage | Large datasets, Spark data |
+| MinIO | S3-compatible object storage | Backups, artifacts, Druid deep storage |
+
+### Visualization & Alerting
+
+| Component | Purpose |
+|-----------|--------|
+| Grafana | Unified dashboards for metrics and logs |
+| Ignite | Metric processing and alerting |
+| Alert Service | Alert routing and notifications |
+| Skyweather | Health monitoring dashboard |
 
 ## Recommended Technology Stack
 

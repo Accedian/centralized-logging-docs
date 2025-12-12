@@ -4,6 +4,11 @@
 
 The Mobility Collector is a distributed data collection system deployed as a remote agent. It consists of two main namespaces handling Fault Management (FM) and Performance Management (PM) workloads.
 
+**Key Configuration Files:**
+- `helm/values.yaml` - Default umbrella chart values
+- `tests/values-mobility-2.yaml` - Example deployment values (GCP)
+- `helm/subcharts/<component>/` - Individual service charts
+
 ## Current Architecture
 
 ### Namespaces
@@ -12,6 +17,28 @@ The Mobility Collector is a distributed data collection system deployed as a rem
 |-----------|---------|----------------|
 | `matrix-fm-analytics` | Fault Management | SNMP trap handling, alerting, OTEL export |
 | `matrix-pm-analytics` | Performance Management | Data collection, processing, web UI |
+
+### Global Configuration (from values-mobility-2.yaml)
+
+```yaml
+global:
+  imageRegistry: gcr.io
+  imagePullSecrets: [regcred]
+  storageClass: openebs-hostpath
+  namespaces:
+    fm: matrix-fm-analytics
+    pm: matrix-pm-analytics
+  rabbitmq:
+    host: mobility-collector-rabbitmq.matrix-pm-analytics.svc.cluster.local
+  redisCluster:
+    enabled: true
+    addresses: [6 redis-cluster nodes]
+  coordinator:
+    url: http://matrix-coordinator:8010
+  fm:
+    alertmanager:
+      host: matrix-of-alertmanager.matrix-fm-analytics.svc.cluster.local
+```
 
 ### FM Components (matrix-fm-analytics)
 
@@ -63,6 +90,54 @@ The Mobility Collector is a distributed data collection system deployed as a rem
    - `of-alertmanager` processes FM alerts locally
    - `alertservice` handles external notifications
 
+### OTEL Exporter Configuration (Current)
+
+The Mobility Collector already has an OpenTelemetry Collector configured to export telemetry to the central PCA:
+
+```yaml
+otel-collector-exporter:
+  namespaceOverride: matrix-fm-analytics
+  fullnameOverride: otel-exporter
+  image:
+    registry: gcr.io
+    repository: npav-172917/otel/matrix4/opentelemetry-collector
+    tag: 0.131.0
+  config:
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: ${env:MY_POD_IP}:4318
+    exporters:
+      otlphttp:
+        endpoint: "https://pca2507.rmn.local/otel/"
+        headers:
+          Authorization: "Bearer <token>"
+          Content-Type: "application/json"
+        tls:
+          insecure_skip_verify: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp, debug]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp, debug]
+```
+
+**Key Points:**
+- Export endpoint: `https://<pca-hostname>/otel/`
+- Authentication: Bearer token (Zitadel PAT on Central PCA)
+- Pipelines: traces, metrics, logs all enabled
+- TLS: Currently using `insecure_skip_verify: true` (should use proper CA in production)
+
 ### Current Gaps
 
 | Gap | Impact | Priority |
@@ -72,6 +147,7 @@ The Mobility Collector is a distributed data collection system deployed as a rem
 | No log shipping to OpenSearch | Cannot correlate logs across sites | **High** |
 | Single OTEL export target | No redundancy, single point of failure | Medium |
 | No Thanos integration | Limited long-term metric storage | Medium |
+| TLS insecure_skip_verify enabled | Security risk in production | Medium |
 
 ## Recommendations
 

@@ -3,6 +3,7 @@ skinparam componentStyle rectangle
 skinparam linetype ortho
 
 title Centralized Monitoring - Distributed PCA Architecture
+footer AOD Deployer (Replicated KOTS) + Mobility Collector
 
 ' Colors
 !define REMOTE_COLOR #E8F5E9
@@ -56,7 +57,7 @@ package "Remote Site N - Mobility Collector" REMOTE_COLOR {
 ' CENTRAL PCA (AOD Deployer)
 ' ========================================
 
-package "Central PCA - AOD Deployer" CENTRAL_COLOR {
+package "Central PCA - AOD Deployer (Replicated)" CENTRAL_COLOR {
     
     rectangle "Ingress Layer" {
         [nginx Reverse Proxy] as nginx
@@ -65,18 +66,18 @@ package "Central PCA - AOD Deployer" CENTRAL_COLOR {
           - 443: Tenant API
           - 2443: Admin API
           - 3443: Zitadel Auth
+          Auth: Bearer token via skylight-aaa
         end note
     }
     
-    rectangle "Log Aggregation" {
+    rectangle "Telemetry Processing" {
+        [OpenTelemetry Collector] as otel_central
+        [otel-mapping-service] as otel_map
         [FluentD Aggregator] as fd_agg
-        [Bellhop OTEL Collector] as bellhop
     }
     
     rectangle "Storage Layer" STORAGE_COLOR {
-        database "OpenSearch\n(Elasticsearch)" as opensearch {
-        }
-        database "Prometheus\n+ Thanos" as thanos {
+        database "Elasticsearch" as opensearch {
         }
         database "Kafka" as kafka_central
         database "Druid" as druid
@@ -84,12 +85,12 @@ package "Central PCA - AOD Deployer" CENTRAL_COLOR {
     
     rectangle "Visualization" {
         [Grafana] as grafana
-        [OpenSearch Dashboards] as osd
+        [Skyweather] as skyweather
     }
     
     rectangle "Alerting" {
-        [Alert Service] as alert_svc
         [Ignite] as ignite
+        [Alert Service] as alert_svc
     }
 }
 
@@ -107,23 +108,20 @@ fd_agg --> opensearch : Index logs
 otel1 --> nginx : OTLP/HTTP\n(Bearer Auth)
 otel2 --> nginx : OTLP/HTTP\n(Bearer Auth)
 otelN --> nginx : OTLP/HTTP\n(Bearer Auth)
-nginx --> bellhop : Route /otel/*
-bellhop --> thanos : Store metrics
-bellhop --> kafka_central : Stream events
-
-' Alternative: Prometheus remote_write to Thanos
-prom1 ..> thanos : remote_write\n(Alternative)
-prom2 ..> thanos : remote_write\n(Alternative)
-promN ..> thanos : remote_write\n(Alternative)
+nginx --> otel_central : Route /otel/*
+otel_central --> kafka_central : otel-*-in topics
+kafka_central --> otel_map : Transform
+otel_map --> kafka_central : otel-mapped-*-in
+kafka_central --> ignite : Metrics processing
+kafka_central --> druid : Analytics
 
 ' Storage to visualization
-opensearch --> osd : Query logs
-thanos --> grafana : Query metrics
-opensearch --> grafana : Log panels
+opensearch --> grafana : Log queries
 druid --> grafana : Analytics data
+ignite --> grafana : Metrics
 
 ' Alerting
-thanos --> ignite : Metric alerts
+ignite --> alert_svc : Metric alerts
 opensearch --> alert_svc : Log-based alerts
 
 @enduml
